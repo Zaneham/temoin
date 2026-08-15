@@ -9,12 +9,25 @@ let contains needle hay =
 let () =
   let iterations = ref 200_000 in
   let only = ref "" in
+  let pin = ref "none" in
   Arg.parse
     [ ("-n", Arg.Set_int iterations, "N iterations per test (default 200000)");
       ("-only", Arg.Set_string only,
-       "NAME run only tests whose name contains NAME") ]
+       "NAME run only tests whose name contains NAME");
+      ("-pin", Arg.Set_string pin,
+       "MODE none, spread (one party per core) or samecore (default none)") ]
     (fun _ -> ())
-    "temoin [-n ITERATIONS] [-only NAME]";
+    "temoin [-n ITERATIONS] [-only NAME] [-pin MODE]";
+  let placement =
+    match !pin with
+    | "spread" -> Pin.Spread
+    | "samecore" -> Pin.Same_core
+    | _ -> Pin.Anywhere
+  in
+  let topology = Pin.read () in
+  if placement <> Pin.Anywhere && not topology.Pin.usable then
+    print_endline
+      "warning: could not read cpu topology, so the run will be unpinned";
   Printf.printf "OCaml memory model litmus tests\n";
   Printf.printf "%d domains available\n\n" (Domain.recommended_domain_count ());
   (* A control firing is the good outcome, so it is not a failure. Only a real
@@ -33,7 +46,7 @@ let () =
             spec.Runner.name spec.Runner.parties cores
         end
         else begin
-          let r = Runner.run ~iterations:!iterations t in
+          let r = Runner.run ~placement ~topology ~iterations:!iterations t in
           Runner.report t r;
           if r.Runner.timed_out then incr timeouts;
           if spec.Runner.control then begin

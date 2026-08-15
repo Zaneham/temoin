@@ -1,3 +1,6 @@
 (library
  (name temoin)
- (libraries unix))
+ (libraries unix)
+ (foreign_stubs
+  (language c)
+  (names pin_stubs)))

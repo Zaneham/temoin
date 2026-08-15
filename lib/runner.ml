@@ -116,6 +116,11 @@ let decode t i buf =
     n := !n / t.radix
   done
 
+type pin_status =
+  | Not_requested
+  | Applied
+  | Failed
+
 type result = {
   test : string;
   iterations : int;
@@ -124,6 +129,10 @@ type result = {
   violations : int;
   out_of_range : int;
   timed_out : bool;
+  (* What was asked for, and whether every party actually got it. A result
+     must never imply a placement it did not get. *)
+  placement : string;
+  pinned : pin_status;
   wall : float;
 }
 
@@ -135,7 +144,8 @@ let jitter seed bound =
     Domain.cpu_relax ()
   done
 
-let run ?(jitter_bound = 64) ~iterations (Test spec) =
+let run ?(jitter_bound = 64) ?(placement = Pin.Anywhere) ?topology ~iterations
+    (Test spec) =
   let width = Array.length spec.labels in
   assert (spec.parties > 0);
   assert (width > 0);
@@ -146,8 +156,15 @@ let run ?(jitter_bound = 64) ~iterations (Test spec) =
   let st = spec.init () in
   let buf = Array.make width 0 in
   let start = barrier spec.parties and finish = barrier spec.parties in
+  let topo = match topology with Some t -> t | None -> Pin.read () in
+  let cpus = Pin.resolve topo placement spec.parties in
+  let pinned_ok = Atomic.make 0 in
   let completed = ref 0 in
   let party i =
+    (* Each domain pins itself, so we never need its pthread handle. *)
+    (match cpus with
+    | Some a -> if Pin.pin_self a.(i) = 1 then ignore (Atomic.fetch_and_add pinned_ok 1)
+    | None -> ());
     let sense_start = ref false and sense_finish = ref false in
     let seed = ref ((i * 7919) + 1) in
     let n = ref 0 and live = ref true in
@@ -200,6 +217,13 @@ let run ?(jitter_bound = 64) ~iterations (Test spec) =
     violations;
     out_of_range = t.out_of_range;
     timed_out;
+    placement = Pin.describe placement;
+    pinned =
+      (match (placement, cpus) with
+      | Pin.Anywhere, _ -> Not_requested
+      | _, None -> Failed
+      | _, Some _ ->
+          if Atomic.get pinned_ok = spec.parties then Applied else Failed);
     wall;
   }
 
@@ -212,6 +236,10 @@ let report (Test spec) r =
   Printf.printf "  %s\n" spec.doc;
   Printf.printf "  %d of %d iterations on %d domains, %.2fs\n" r.completed
     r.iterations spec.parties r.wall;
+  (match r.pinned with
+  | Not_requested -> ()
+  | Applied -> Printf.printf "  %s\n" r.placement
+  | Failed -> Printf.printf "  %s, NOT APPLIED\n" r.placement);
   if r.timed_out then
     Printf.printf "  TIMED OUT, results below are partial\n";
   if r.out_of_range > 0 then
